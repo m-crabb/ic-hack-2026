@@ -7,10 +7,14 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 from agriguard import AgriGuard
+from translate import Translator
 
 if __name__ == "__main__":
+    DEEPL_TOKEN = os.environ.get("DEEPL_TOKEN")
+
     # Option 1: by city name
     app = AgriGuard(city_name="London")
+    translator = Translator(DEEPL_TOKEN)
 
     # Option 2: by latitude / longitude (e.g. Berlin)
     # app = AgriGuard(latitude=52.52, longitude=13.41)
@@ -18,3 +22,7 @@ if __name__ == "__main__":
     if app.lat is not None:
         advice = app.get_ai_agri_advice()
         app.print_display(advice)
+        tl = translator.translate(advice)
+        print(tl)
+
+
