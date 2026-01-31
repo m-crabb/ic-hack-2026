@@ -1,9 +1,16 @@
+import os
+import re
 import pandas as pd
-from datetime import datetime
-
 import openmeteo_requests
 import requests_cache
+from datetime import datetime
+from huggingface_hub import InferenceClient
 from retry_requests import retry
+
+from dotenv import load_dotenv
+
+# Load .env from the directory containing this script (so it works regardless of cwd)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 # Open-Meteo API client with cache (1h) and retry on error
 _cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
@@ -50,37 +57,60 @@ class AgriGuard:
             print(f"❌ Geocoding: {e}")
             return None, None
 
-    def get_nowcast_alert(self):
-        """Immediate rain threat in the next ~60 mins (15-min data where available).
-        Uses REST JSON (one request); openmeteo_requests client doesn't expose Minutely15."""
-        if self.lat is None:
-            return "Location Error"
+    def _advice_from_llm(self, metrics, model_id="meta-llama/Llama-3.1-8B-Instruct"):
+        """Call Hugging Face Inference API (open model) for agronomic advice.
+        Returns (advice_list, None) on success, (None, None) if no token, (None, error_msg) on API failure.
+        """
+        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        if not token:
+            return None, None
 
-        url = "https://api.open-meteo.com/v1/forecast"
-        params = {
-            "latitude": self.lat,
-            "longitude": self.lon,
-            "minutely_15": "precipitation",
-            "forecast_days": 1,
-            "timezone": "auto",
-        }
+        location = getattr(self, "_display_name", f"{self.lat:.2f}, {self.lon:.2f}")
+        rain_1h = metrics.get("rain_next_hour_mm")
+        rain_1h_line = (
+            f"- Rain in next hour: {rain_1h:.1f} mm (immediate threat if >0.5 mm)\n        "
+            if rain_1h is not None
+            else ""
+        )
+        prompt = f"""You are an expert agronomist advising smallholder farmers. Use ONLY the numbers below. Give 3–5 short, actionable bullet points for TODAY. Be specific and practical (what to do, when, and why). Prioritise by urgency. No preamble.
+
+        Location: {location}
+
+        Forecast (use these exact figures):
+        - Temperature: min {metrics["min_temp"]:.1f}°C, max {metrics["max_temp"]:.1f}°C, average {metrics["avg_temp"]:.1f}°C
+        - Total precipitation (next 24h): {metrics["total_rain"]:.1f} mm
+                {rain_1h_line}- Soil moisture (3–9 cm, 0–1 scale): {metrics["min_soil"]:.2f} (low if <0.2, critical if <0.15)
+
+        Rules: Base advice only on the data above. Mention heat stress / shade if max temp is high; irrigation if soil is dry; drainage / delay fieldwork if rain is significant; immediate rain in next hour if >0.5 mm. One line per point, label briefly (e.g. "Heat:", "Irrigation:", "Rain:"). Reply with only the bullet points."""
+
         try:
-            data = _retry_session.get(url, params=params, timeout=10).json()
-            if data.get("error"):
-                return f"⚠️ Nowcast Unavailable: {data.get('reason', 'API error')}"
-            minutely = data.get("minutely_15") or {}
-            precip = minutely.get("precipitation")
-            if not precip:
-                return "✅ Nowcast: No immediate rain data for this region."
-            upcoming_rain = sum(precip[:4])
-            if upcoming_rain > 0.5:
-                return f"🚨 NOWCAST ALERT: Heavy rain ({upcoming_rain}mm) expected within the hour. Secure equipment!"
-            return "✅ Nowcast: No immediate rain threats detected."
+            client = InferenceClient()
+            completion = client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=256,
+                temperature=0.3,
+            )
+            text = completion.choices[0].message.content
+            if not text:
+                return None, "Model returned empty response"
+            # Parse into list: split on newlines, strip bullet prefixes
+            lines = [
+                re.sub(r"^[\s\-*•\d.)]+", "", line).strip()
+                for line in text.strip().splitlines()
+                if line.strip()
+            ]
+            advice = [line for line in lines if line]
+            return (
+                (advice, None)
+                if advice
+                else (None, "Model returned no parseable advice")
+            )
         except Exception as e:
-            return f"⚠️ Nowcast Unavailable: {e}"
+            return None, str(e)
 
     def get_ai_agri_advice(self):
-        """24-hour forecast and agronomic advice (temp, soil moisture, precipitation)."""
+        """24-hour forecast and agronomic advice from Hugging Face open model. Requires HF_TOKEN."""
         if self.lat is None:
             return ["Location Error"]
 
@@ -109,62 +139,84 @@ class AgriGuard:
                 "temperature_2m": hourly.Variables(0).ValuesAsNumpy(),
             }
             if n_var > 1:
-                hourly_data["soil_moisture_3_to_9cm"] = hourly.Variables(1).ValuesAsNumpy()
+                hourly_data["soil_moisture_3_to_9cm"] = hourly.Variables(
+                    1
+                ).ValuesAsNumpy()
             if n_var > 2:
                 hourly_data["precipitation"] = hourly.Variables(2).ValuesAsNumpy()
 
             df = pd.DataFrame(hourly_data)
-            avg_temp = df["temperature_2m"].mean()
-            total_rain = df["precipitation"].sum() if "precipitation" in df else 0.0
-            min_soil = (
-                df["soil_moisture_3_to_9cm"].min()
+            avg_temp = float(df["temperature_2m"].mean())
+            min_temp = float(df["temperature_2m"].min())
+            max_temp = float(df["temperature_2m"].max())
+            total_rain = (
+                float(df["precipitation"].sum()) if "precipitation" in df else 0.0
+            )
+            min_soil_raw = (
+                float(df["soil_moisture_3_to_9cm"].min())
                 if "soil_moisture_3_to_9cm" in df
                 else None
             )
+            min_soil_for_prompt = min_soil_raw if min_soil_raw is not None else 0.0
 
-            advice = []
-            if avg_temp > 32:
-                advice.append(
-                    "🌡️ Heat Stress: Temperatures are high. Ensure livestock have shade."
-                )
-            if min_soil is not None and min_soil < 0.15:
-                advice.append(
-                    "💧 Irrigation: Soil is very dry. Priority watering needed."
-                )
-            if total_rain > 10:
-                advice.append(
-                    "🌧️ Flood Risk: Significant rainfall predicted today. Check drainage."
-                )
-            return (
-                advice
-                if advice
-                else ["🌱 Forecast: Stable conditions. Proceed with planned field work."]
-            )
+            # Next-hour rain (for immediate threat in advice)
+            rain_next_hour_mm = None
+            try:
+                r = _retry_session.get(
+                    url,
+                    params={
+                        "latitude": self.lat,
+                        "longitude": self.lon,
+                        "minutely_15": "precipitation",
+                        "forecast_days": 1,
+                        "timezone": "auto",
+                    },
+                    timeout=10,
+                ).json()
+                precip = (r.get("minutely_15") or {}).get("precipitation")
+                if precip and len(precip) >= 4:
+                    rain_next_hour_mm = sum(precip[:4])
+            except Exception:
+                pass
+
+            metrics = {
+                "avg_temp": avg_temp,
+                "min_temp": min_temp,
+                "max_temp": max_temp,
+                "total_rain": total_rain,
+                "min_soil": min_soil_for_prompt,
+                "rain_next_hour_mm": rain_next_hour_mm,
+            }
+            advice, api_error = self._advice_from_llm(metrics)
+            if advice is not None:
+                return advice
+            if api_error:
+                return [f"⚠️ AI advice unavailable: {api_error}"]
+            return [
+                "⚠️ Set HF_TOKEN (or HUGGING_FACE_HUB_TOKEN) in .env or environment and retry."
+            ]
         except Exception as e:
             return [f"⚠️ AI Forecast Unavailable: {e}"]
 
-    def print_display(self, nowcast, advice):
-        """Print summary (e.g. console / SMS-style)."""
+    def print_display(self, advice):
+        """Print advice summary (e.g. console / SMS-style)."""
         print("\n" + "=" * 45)
-        print(f"🌾 AGRIGUARD AI: {self._display_name.upper()} UPDATE")
+        print(f"🌾 AGRIGUARD: {self._display_name.upper()} — TODAY'S ADVICE")
         print(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         print("-" * 45)
-        print(nowcast)
-        print("\nDAILY PLANNER:")
         for line in advice:
-            print(f"- {line}")
+            print(f"• {line}")
         print("=" * 45 + "\n")
 
 
 # --- TEST ---
 if __name__ == "__main__":
     # Option 1: by city name
-    # app = AgriGuard(city_name="Porto")
+    app = AgriGuard(city_name="London")
 
     # Option 2: by latitude / longitude (e.g. Berlin)
-    app = AgriGuard(latitude=52.52, longitude=13.41)
+    # app = AgriGuard(latitude=52.52, longitude=13.41)
 
     if app.lat is not None:
-        n_alert = app.get_nowcast_alert()
-        a_advice = app.get_ai_agri_advice()
-        app.print_display(n_alert, a_advice)
+        advice = app.get_ai_agri_advice()
+        app.print_display(advice)
