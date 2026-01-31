@@ -1,0 +1,10 @@
+earth2studio
+matplotlib
+cartopy
+xarray
+numpy
+pandas
+scipy
+scikit-learn
+scikit-image
+scikit-learn
