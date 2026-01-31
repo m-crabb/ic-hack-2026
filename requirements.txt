@@ -9,3 +9,4 @@ requests-cache
 retry-requests
 huggingface_hub>=0.23.0
 python-dotenv
+ruff

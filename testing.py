@@ -67,17 +67,21 @@ class AgriGuard:
 
         location = getattr(self, "_display_name", f"{self.lat:.2f}, {self.lon:.2f}")
         rain_1h = metrics.get("rain_next_hour_mm")
-        rain_1h_line = f"- Rain in next hour: {rain_1h:.1f} mm (immediate threat if >0.5 mm)\n        " if rain_1h is not None else ""
+        rain_1h_line = (
+            f"- Rain in next hour: {rain_1h:.1f} mm (immediate threat if >0.5 mm)\n        "
+            if rain_1h is not None
+            else ""
+        )
         prompt = f"""You are an expert agronomist advising smallholder farmers. Use ONLY the numbers below. Give 3–5 short, actionable bullet points for TODAY. Be specific and practical (what to do, when, and why). Prioritise by urgency. No preamble.
 
-Location: {location}
+        Location: {location}
 
-Forecast (use these exact figures):
-- Temperature: min {metrics['min_temp']:.1f}°C, max {metrics['max_temp']:.1f}°C, average {metrics['avg_temp']:.1f}°C
-- Total precipitation (next 24h): {metrics['total_rain']:.1f} mm
-        {rain_1h_line}- Soil moisture (3–9 cm, 0–1 scale): {metrics['min_soil']:.2f} (low if <0.2, critical if <0.15)
+        Forecast (use these exact figures):
+        - Temperature: min {metrics["min_temp"]:.1f}°C, max {metrics["max_temp"]:.1f}°C, average {metrics["avg_temp"]:.1f}°C
+        - Total precipitation (next 24h): {metrics["total_rain"]:.1f} mm
+                {rain_1h_line}- Soil moisture (3–9 cm, 0–1 scale): {metrics["min_soil"]:.2f} (low if <0.2, critical if <0.15)
 
-Rules: Base advice only on the data above. Mention heat stress / shade if max temp is high; irrigation if soil is dry; drainage / delay fieldwork if rain is significant; immediate rain in next hour if >0.5 mm. One line per point, label briefly (e.g. "Heat:", "Irrigation:", "Rain:"). Reply with only the bullet points."""
+        Rules: Base advice only on the data above. Mention heat stress / shade if max temp is high; irrigation if soil is dry; drainage / delay fieldwork if rain is significant; immediate rain in next hour if >0.5 mm. One line per point, label briefly (e.g. "Heat:", "Irrigation:", "Rain:"). Reply with only the bullet points."""
 
         try:
             client = InferenceClient()
@@ -97,7 +101,11 @@ Rules: Base advice only on the data above. Mention heat stress / shade if max te
                 if line.strip()
             ]
             advice = [line for line in lines if line]
-            return (advice, None) if advice else (None, "Model returned no parseable advice")
+            return (
+                (advice, None)
+                if advice
+                else (None, "Model returned no parseable advice")
+            )
         except Exception as e:
             return None, str(e)
 
@@ -131,7 +139,9 @@ Rules: Base advice only on the data above. Mention heat stress / shade if max te
                 "temperature_2m": hourly.Variables(0).ValuesAsNumpy(),
             }
             if n_var > 1:
-                hourly_data["soil_moisture_3_to_9cm"] = hourly.Variables(1).ValuesAsNumpy()
+                hourly_data["soil_moisture_3_to_9cm"] = hourly.Variables(
+                    1
+                ).ValuesAsNumpy()
             if n_var > 2:
                 hourly_data["precipitation"] = hourly.Variables(2).ValuesAsNumpy()
 
@@ -139,7 +149,9 @@ Rules: Base advice only on the data above. Mention heat stress / shade if max te
             avg_temp = float(df["temperature_2m"].mean())
             min_temp = float(df["temperature_2m"].min())
             max_temp = float(df["temperature_2m"].max())
-            total_rain = float(df["precipitation"].sum()) if "precipitation" in df else 0.0
+            total_rain = (
+                float(df["precipitation"].sum()) if "precipitation" in df else 0.0
+            )
             min_soil_raw = (
                 float(df["soil_moisture_3_to_9cm"].min())
                 if "soil_moisture_3_to_9cm" in df
@@ -180,7 +192,9 @@ Rules: Base advice only on the data above. Mention heat stress / shade if max te
                 return advice
             if api_error:
                 return [f"⚠️ AI advice unavailable: {api_error}"]
-            return ["⚠️ Set HF_TOKEN (or HUGGING_FACE_HUB_TOKEN) in .env or environment and retry."]
+            return [
+                "⚠️ Set HF_TOKEN (or HUGGING_FACE_HUB_TOKEN) in .env or environment and retry."
+            ]
         except Exception as e:
             return [f"⚠️ AI Forecast Unavailable: {e}"]
 
@@ -201,7 +215,7 @@ if __name__ == "__main__":
     app = AgriGuard(city_name="London")
 
     # Option 2: by latitude / longitude (e.g. Berlin)
-    #app = AgriGuard(latitude=52.52, longitude=13.41)
+    # app = AgriGuard(latitude=52.52, longitude=13.41)
 
     if app.lat is not None:
         advice = app.get_ai_agri_advice()
