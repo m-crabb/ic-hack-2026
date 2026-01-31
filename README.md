@@ -37,7 +37,7 @@ Communities in rural areas are disproportionately affected by extreme weather ev
 **By city name**
 
 ```python
-from testing import AgriGuard
+from agriguard import AgriGuard
 
 app = AgriGuard(city_name="London")
 if app.lat is not None:
@@ -54,20 +54,26 @@ if app.lat is not None:
     app.print_display(advice)
 ```
 
-**Run the built-in demo**
+**Run the demo**
 
 ```bash
-python testing.py
+python run.py
 ```
 
-This uses `city_name="London"` by default; change the `AgriGuard(city_name="...")` line in `testing.py` to try other locations.
+This uses `city_name="London"` by default; edit the `AgriGuard(city_name="...")` line in `run.py` to try other locations.
 
 ## Project layout
 
 | Path | Description |
 |------|-------------|
-| `testing.py` | AgriGuard class: geocoding, Open-Meteo forecast fetch, LLM advice, and console output. |
-| `outbound/outbound.py` | Twilio-based SMS client for sending messages (e.g. bulk alerts). |
+| `agriguard/` | Core package: geocoding, weather fetch, LLM advice, and `AgriGuard` client. |
+| `agriguard/geocode.py` | Open-Meteo Geocoding (city name → lat/lon). |
+| `agriguard/weather.py` | Open-Meteo forecast and agronomic metrics. |
+| `agriguard/advice.py` | Hugging Face Inference API for bullet-point advice. |
+| `agriguard/agriguard.py` | `AgriGuard` class composing the above. |
+| `outbound/outbound.py` | Twilio-based SMS client (e.g. bulk alerts). |
+| `translate/translator.py` | DeepL translator. |
+| `run.py` | Demo script: load .env and run AgriGuard for a location. |
 | `requirements.txt` | Python dependencies. |
 | `.env` | Local env vars (not committed); at least `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for LLM. |
 
