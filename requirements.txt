@@ -12,3 +12,4 @@ twilio
 huggingface_hub>=0.23.0
 python-dotenv
 ruff
+deepl
